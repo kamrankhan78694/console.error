@@ -1,7 +1,6 @@
-import type { InterceptConfig, RuntimeEnv, UnifErrEvent } from './types';
-
-declare const __UNIFERR_RELEASE__: string | undefined;
-declare const Deno: { version: { deno: string } } | undefined;
+import type { InterceptConfig, Level, UnifErrEvent } from './types';
+import { createEvent } from './event';
+import { isBrowserRuntime, isNodeRuntime } from './runtime';
 
 type ConsoleMethod = 'error' | 'warn' | 'debug' | 'info';
 
@@ -16,172 +15,66 @@ interface InterceptState {
 }
 
 const METHODS: readonly ConsoleMethod[] = ['error', 'warn', 'debug', 'info'];
-const STATE_SYMBOL = Symbol('uniferr.intercept.state');
+const STATE_SYMBOL = Symbol.for('uniferr.intercept.state');
 
-const levelByMethod: Record<ConsoleMethod, UnifErrEvent['level']> = {
+const levelByMethod: Record<ConsoleMethod, Level> = {
   error: 'error',
   warn: 'warn',
   debug: 'debug',
   info: 'info'
 };
 
-function isNodeRuntime(): boolean {
-  return typeof process !== 'undefined' && typeof process.version === 'string';
-}
-
-function isBrowserRuntime(): boolean {
-  return typeof window !== 'undefined' && typeof window.document !== 'undefined';
-}
-
-function isWorkerRuntime(): boolean {
-  return !isBrowserRuntime() && !isNodeRuntime() && !isDenoRuntime();
-}
-
-function isDenoRuntime(): boolean {
-  return typeof Deno !== 'undefined';
-}
-
-function resolveRuntimeEnv(): RuntimeEnv {
-  const release = typeof __UNIFERR_RELEASE__ === 'string' ? __UNIFERR_RELEASE__ : undefined;
-
-  if (isBrowserRuntime()) {
-    const env: RuntimeEnv = {
-      runtime: 'browser',
-      url: window.location.href,
-      userAgent: navigator.userAgent
-    };
-    if (release) {
-      env.release = release;
-    }
-    return env;
-  }
-
-  if (isNodeRuntime()) {
-    const env: RuntimeEnv = {
-      runtime: 'node',
-      nodeVersion: process.version
-    };
-    if (release) {
-      env.release = release;
-    }
-    return env;
-  }
-
-  if (isDenoRuntime()) {
-    const env: RuntimeEnv = { runtime: 'deno' };
-    if (release) {
-      env.release = release;
-    }
-    return env;
-  }
-
-  if (isWorkerRuntime()) {
-    const env: RuntimeEnv = { runtime: 'worker' };
-    if (release) {
-      env.release = release;
-    }
-    return env;
-  }
-
-  const env: RuntimeEnv = { runtime: 'worker' };
-  if (release) {
-    env.release = release;
-  }
-  return env;
-}
-
-function createMessage(args: unknown[]): string {
-  if (args.length === 0) {
-    return '';
-  }
-
-  const first = args[0];
-  if (first instanceof Error) {
-    return first.message;
-  }
-
-  if (typeof first === 'string') {
-    return first;
-  }
-
-  return String(first);
-}
-
-function getStack(args: unknown[]): string | undefined {
-  const first = args[0];
-  if (first instanceof Error && typeof first.stack === 'string') {
-    return first.stack;
-  }
-  return undefined;
-}
-
-function createEvent(level: UnifErrEvent['level'], args: unknown[], config: InterceptConfig): UnifErrEvent {
-  const stack = getStack(args);
-  const event: UnifErrEvent = {
-    id: crypto.randomUUID(),
-    timestamp: Date.now(),
-    level,
-    message: createMessage(args),
-    args,
-    env: resolveRuntimeEnv(),
-    tags: config.tags ?? {},
-    extras: config.extras ?? {}
-  };
-
-  if (stack) {
-    event.stack = stack;
-  }
-
-  return event;
-}
-
-function getState(): InterceptState | undefined {
-  const maybeState = Reflect.get(console, STATE_SYMBOL);
-
-  if (!isInterceptState(maybeState)) {
-    return undefined;
-  }
-
-  return maybeState;
-}
-
 function isInterceptState(value: unknown): value is InterceptState {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
+  const candidate = value as Partial<InterceptState>;
+  return (
+    typeof candidate.installed === 'boolean' &&
+    typeof candidate.teardown === 'function' &&
+    typeof candidate.originals === 'object' &&
+    candidate.originals !== null
+  );
+}
 
-  if (!('installed' in value) || !('teardown' in value) || !('originals' in value)) {
-    return false;
-  }
+function getState(): InterceptState | undefined {
+  const maybe = Reflect.get(console, STATE_SYMBOL);
+  return isInterceptState(maybe) ? maybe : undefined;
+}
 
-  if (typeof value.installed !== 'boolean' || typeof value.teardown !== 'function') {
-    return false;
-  }
+/**
+ * Saved console methods captured at install time. These are the only
+ * functions internal code (e.g. transports) should use to log without
+ * recursing back through the intercept.
+ */
+export interface OriginalConsole {
+  error: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+  debug: (...args: unknown[]) => void;
+  info: (...args: unknown[]) => void;
+}
 
-  if (typeof value.originals !== 'object' || value.originals === null) {
-    return false;
-  }
+let originalConsole: OriginalConsole | undefined;
 
-  if (!('error' in value.originals) || typeof value.originals.error !== 'function') {
-    return false;
-  }
-  if (!('warn' in value.originals) || typeof value.originals.warn !== 'function') {
-    return false;
-  }
-  if (!('debug' in value.originals) || typeof value.originals.debug !== 'function') {
-    return false;
-  }
-  if (!('info' in value.originals) || typeof value.originals.info !== 'function') {
-    return false;
-  }
-
-  return true;
+export function getOriginalConsole(): OriginalConsole {
+  return (
+    originalConsole ?? {
+      error: console.error,
+      warn: console.warn,
+      debug: console.debug,
+      info: console.info
+    }
+  );
 }
 
 export function installIntercept(config: InterceptConfig): () => void {
-  const currentState = getState();
-  if (currentState?.installed) {
-    return currentState.teardown;
+  const existing = getState();
+  if (existing?.installed) {
+    return existing.teardown;
+  }
+
+  if (!config.transport && !config.onEvent) {
+    throw new Error('uniferr: installIntercept requires a `transport` or `onEvent`');
   }
 
   const originals: ConsoleMethodMap = {
@@ -190,6 +83,143 @@ export function installIntercept(config: InterceptConfig): () => void {
     debug: console.debug,
     info: console.info
   };
+  originalConsole = originals;
+
+  const allowedLevels = new Set<Level>(config.levels ?? ['fatal', 'error', 'warn', 'info', 'debug']);
+
+  // Reentrancy guard: only blocks SYNCHRONOUS recursion (e.g. a transport
+  // that itself calls console.error during its own send()). Async overlapping
+  // host calls run on different ticks with depth back at zero, so they are
+  // captured normally.
+  let syncDepth = 0;
+
+  const reportError = (error: unknown, event?: UnifErrEvent): void => {
+    if (typeof config.onError === 'function') {
+      try {
+        config.onError(error, event);
+      } catch {
+        // Never let onError crash the host process.
+      }
+      return;
+    }
+    try {
+      originals.error('[uniferr] internal error:', error);
+    } catch {
+      // Last-resort: swallow.
+    }
+  };
+
+  const reportDrop = (event: UnifErrEvent, reason: string): void => {
+    if (typeof config.onDrop !== 'function') {
+      return;
+    }
+    try {
+      config.onDrop(event, reason);
+    } catch {
+      // Never let onDrop crash the host.
+    }
+  };
+
+  const handlePromise = (p: Promise<void>, event: UnifErrEvent): Promise<void> =>
+    p.catch((error) => {
+      reportError(error, event);
+    });
+
+  const runChain = (
+    stages: Array<((event: UnifErrEvent) => void | Promise<void>) | undefined>,
+    event: UnifErrEvent
+  ): void => {
+    let i = 0;
+    const next = (): void | Promise<void> => {
+      while (i < stages.length) {
+        const fn = stages[i];
+        i += 1;
+        if (!fn) continue;
+        syncDepth += 1;
+        let result: void | Promise<void>;
+        try {
+          result = fn(event);
+        } catch (error) {
+          syncDepth -= 1;
+          reportError(error, event);
+          return;
+        }
+        syncDepth -= 1;
+        if (result && typeof (result as Promise<void>).then === 'function') {
+          // Async stage: continue the chain after it resolves.
+          void handlePromise(
+            (result as Promise<void>).then(() => {
+              const tail = next();
+              if (tail) {
+                return tail;
+              }
+              return undefined;
+            }),
+            event
+          );
+          return;
+        }
+      }
+    };
+    next();
+  };
+
+  const emit = (level: Level, args: unknown[]): void => {
+    if (!allowedLevels.has(level)) {
+      return;
+    }
+    if (syncDepth > 0) {
+      // Synchronous recursion from a transport / pipeline call — drop to
+      // prevent infinite loops. Use the original sink so we never lose the log.
+      try {
+        const sink = originals[level === 'fatal' ? 'error' : (level as ConsoleMethod)];
+        sink.apply(console, args);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    let event: UnifErrEvent;
+    try {
+      event = createEvent({
+        level,
+        args,
+        ...(config.tags ? { tags: config.tags } : {}),
+        ...(config.extras ? { extras: config.extras } : {}),
+        ...(config.release ? { release: config.release } : {})
+      });
+    } catch (error) {
+      reportError(error);
+      return;
+    }
+    runChain(
+      [
+        config.pipeline,
+        config.transport ? (e) => config.transport!.send(e) : undefined,
+        config.onEvent
+      ],
+      event
+    );
+  };
+
+  for (const method of METHODS) {
+    const original = originals[method];
+    const replacement = (...args: unknown[]): void => {
+      try {
+        emit(levelByMethod[method], args);
+      } catch (error) {
+        reportError(error);
+      }
+      original.apply(console, args);
+    };
+
+    Object.defineProperty(console, method, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: replacement
+    });
+  }
 
   const nodeHandlers: {
     uncaughtException?: (error: Error) => void;
@@ -201,25 +231,6 @@ export function installIntercept(config: InterceptConfig): () => void {
     unhandledRejection?: (event: PromiseRejectionEvent) => void;
   } = {};
 
-  const emit = (level: UnifErrEvent['level'], args: unknown[]): void => {
-    void config.onEvent(createEvent(level, args, config));
-  };
-
-  for (const method of METHODS) {
-    const original = originals[method];
-    const replacement = (...args: unknown[]): void => {
-      emit(levelByMethod[method], args);
-      original.apply(console, args);
-    };
-
-    Object.defineProperty(console, method, {
-      configurable: false,
-      enumerable: true,
-      writable: true,
-      value: replacement
-    });
-  }
-
   if (isBrowserRuntime()) {
     browserHandlers.onError = window.onerror;
     window.onerror = (
@@ -229,13 +240,15 @@ export function installIntercept(config: InterceptConfig): () => void {
       colno?: number,
       error?: Error
     ): boolean => {
-      emit('error', [message, source, lineno, colno, error]);
-
-      const prevHandler = browserHandlers.onError;
-      if (typeof prevHandler === 'function') {
-        return prevHandler(message, source, lineno, colno, error);
+      try {
+        emit('error', error ? [error] : [message, source, lineno, colno]);
+      } catch (err) {
+        reportError(err);
       }
-
+      const prev = browserHandlers.onError;
+      if (typeof prev === 'function') {
+        return prev(message, source, lineno, colno, error);
+      }
       return false;
     };
 
@@ -249,36 +262,44 @@ export function installIntercept(config: InterceptConfig): () => void {
     nodeHandlers.uncaughtException = (error: Error): void => {
       emit('fatal', [error]);
     };
-
     nodeHandlers.unhandledRejection = (reason: unknown): void => {
       emit('fatal', [reason]);
     };
-
     process.on('uncaughtException', nodeHandlers.uncaughtException);
     process.on('unhandledRejection', nodeHandlers.unhandledRejection);
   }
 
   const teardown = (): void => {
     for (const method of METHODS) {
-      console[method] = originals[method];
+      Object.defineProperty(console, method, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: originals[method]
+      });
     }
 
     if (isBrowserRuntime()) {
       window.onerror = browserHandlers.onError ?? null;
-
-      const unhandledRejectionHandler = browserHandlers.unhandledRejection;
-      if (typeof unhandledRejectionHandler === 'function') {
-        window.removeEventListener('unhandledrejection', unhandledRejectionHandler);
+      if (browserHandlers.unhandledRejection) {
+        window.removeEventListener('unhandledrejection', browserHandlers.unhandledRejection);
       }
     }
 
     if (isNodeRuntime()) {
-      if (typeof nodeHandlers.uncaughtException === 'function') {
+      if (nodeHandlers.uncaughtException) {
         process.off('uncaughtException', nodeHandlers.uncaughtException);
       }
-
-      if (typeof nodeHandlers.unhandledRejection === 'function') {
+      if (nodeHandlers.unhandledRejection) {
         process.off('unhandledRejection', nodeHandlers.unhandledRejection);
+      }
+    }
+
+    if (config.transport?.flush) {
+      try {
+        void config.transport.flush();
+      } catch (error) {
+        reportError(error);
       }
     }
 
@@ -286,6 +307,7 @@ export function installIntercept(config: InterceptConfig): () => void {
     if (state) {
       state.installed = false;
     }
+    originalConsole = undefined;
   };
 
   const state: InterceptState = {

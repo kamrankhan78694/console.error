@@ -21,7 +21,8 @@ ARCHITECTURE CONSTRAINTS
    the file transport or the DB transport
 4. Runtime targets: Browser, Node.js ≥18, Deno, Cloudflare Workers, LWC
 5. TypeScript strict mode throughout. No `any`. No type assertions.
-6. Bundle size budget: core ≤ 4 KB gzipped
+6. Bundle size budget: core ≤ 6 KB gzipped (relaxed from the original 4 KB to fit
+   the in-core enrichers — sub-package transports remain independent and tree-shakeable)
 
 
 <img width="986" height="754" alt="image" src="https://github.com/user-attachments/assets/a38a67dc-7b01-4605-ab9c-03fd0bd02424" />

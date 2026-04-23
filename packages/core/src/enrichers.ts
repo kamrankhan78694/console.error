@@ -13,14 +13,18 @@ export interface StackFrame {
   native: boolean;
 }
 
-const V8_FRAME_RE = /^\s*at\s+(?:(.+?)\s+\()?(?:(.+?):(\d+):(\d+)|([^)]+))\)?\s*$/;
-const SAFARI_FRAME_RE = /^\s*(?:([^@]+)@)?(.*?):(\d+):(\d+)\s*$/;
+const V8_FRAME_RE = /^\s{0,8}at\s+(?:(.{1,200}?)\s+\()?(?:(.{1,1000}?):(\d{1,10}):(\d{1,10})|([^)]{1,1000}))\)?\s*$/;
+const SAFARI_FRAME_RE = /^\s{0,8}(?:([^@\s]{1,200})@)?(.{1,1000}?):(\d{1,10}):(\d{1,10})\s*$/;
+
+const MAX_FRAME_LINE_LENGTH = 2000;
 
 export function parseStack(stack: string): StackFrame[] {
   const frames: StackFrame[] = [];
   const lines = stack.split('\n');
   for (const raw of lines) {
-    const line = raw.trim();
+    // Bound line length to keep regex matching strictly linear and safe
+    // against pathological / adversarial inputs (ReDoS-resistant).
+    const line = (raw.length > MAX_FRAME_LINE_LENGTH ? raw.slice(0, MAX_FRAME_LINE_LENGTH) : raw).trim();
     if (!line || line.startsWith('Error') || line.endsWith(':')) {
       continue;
     }
@@ -104,11 +108,12 @@ async function digestSha256(input: string): Promise<string> {
     return hex;
   }
   // Last-resort non-cryptographic hash; only used when no crypto is present.
+  // (djb2-style polynomial hash; not for security purposes.)
   let h = 0;
   for (let i = 0; i < input.length; i += 1) {
     h = (Math.imul(31, h) + input.charCodeAt(i)) | 0;
   }
-  return `fnv_${(h >>> 0).toString(16)}`;
+  return `poly_${(h >>> 0).toString(16)}`;
 }
 
 export function dedupEnricher(options: DedupOptions = {}): Enricher {
@@ -164,7 +169,6 @@ async function loadAsyncLocalStorage(): Promise<AsyncLocalStorageLike<ContextSto
     return undefined;
   }
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const mod = (await import('node:async_hooks')) as {
       AsyncLocalStorage: new <T>() => AsyncLocalStorageLike<T>;
     };

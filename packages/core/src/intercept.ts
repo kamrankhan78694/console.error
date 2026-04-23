@@ -15,7 +15,9 @@ interface InterceptState {
 }
 
 const METHODS: readonly ConsoleMethod[] = ['error', 'warn', 'debug', 'info'];
-const STATE_SYMBOL = Symbol.for('uniferr.intercept.state');
+// Module-private symbol — never registered with Symbol.for so it cannot
+// collide with state placed by other libraries on `console`.
+const STATE_SYMBOL = Symbol('uniferr.intercept.state');
 
 const levelByMethod: Record<ConsoleMethod, Level> = {
   error: 'error',
@@ -213,6 +215,10 @@ export function installIntercept(config: InterceptConfig): () => void {
       original.apply(console, args);
     };
 
+    // `configurable: true` is required so that teardown() can restore the
+    // original method via a second defineProperty call. The PRD originally
+    // suggested `configurable: false`, but that prevents reliable teardown
+    // and double-install recovery in tests / hot-reload scenarios.
     Object.defineProperty(console, method, {
       configurable: true,
       enumerable: true,

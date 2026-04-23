@@ -26,6 +26,30 @@ importers:
 
   packages/core: {}
 
+  packages/plugin-apex:
+    dependencies:
+      '@uniferr/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/transport-console:
+    dependencies:
+      '@uniferr/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/transport-file:
+    dependencies:
+      '@uniferr/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/transport-http:
+    dependencies:
+      '@uniferr/core':
+        specifier: workspace:*
+        version: link:../core
+
 packages:
 
   '@esbuild/aix-ppc64@0.21.5':

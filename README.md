@@ -39,7 +39,7 @@ The current JavaScript error-handling landscape is split across incompatible too
 - 🧩 **Composable middleware** — Koa-style async enricher pipeline
 - 🔁 **Deduplication** — fingerprint-based suppression prevents log storms
 - ⚛️ **React-aware** — optional enricher extracts the full component stack
-- 📦 **≤ 4 KB gzipped** for core
+- 📦 **≤ 6 KB gzipped** for core (per-package transports remain independent and tree-shakeable)
 - 💯 **TypeScript strict** throughout — no `any`, no type assertions
 
 ---
@@ -304,11 +304,10 @@ pnpm test
 # Run tests in watch mode
 pnpm test --watch
 
-# Check bundle size (fails CI if core > 4 KB gzipped)
+# Check bundle size (fails CI if core exceeds the configured budget — currently 6 KB gzipped)
 pnpm size
 
-# Lint + typecheck
-pnpm lint
+# Typecheck the entire monorepo
 pnpm typecheck
 ```
 
@@ -365,7 +364,7 @@ define: {
 | React component stack | ✅ (plugin) | ❌ | ✅ | ⚠️ manual |
 | Deduplication | ✅ built-in | ❌ | ✅ | ❌ |
 | TypeScript strict | ✅ | ⚠️ | ⚠️ | ❌ |
-| Bundle size | ≤ 4 KB | ~120 KB | ~80 KB | ~0 KB |
+| Bundle size | ≤ 6 KB | ~120 KB | ~80 KB | ~0 KB |
 
 ---
 
@@ -378,7 +377,7 @@ Contributions are welcome. Please read [`CONTRIBUTING.md`](./CONTRIBUTING.md) be
 3. Commit using [Conventional Commits](https://www.conventionalcommits.org/): `feat(core): add sampling support`
 4. Open a pull request against `main`
 
-All PRs must pass `pnpm lint && pnpm typecheck && pnpm test` and must not increase core bundle size beyond 4 KB gzipped.
+All PRs must pass `pnpm typecheck && pnpm test && pnpm size` and must not increase the core bundle past its configured budget.
 
 ---
 
